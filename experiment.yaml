@@ -1,0 +1,202 @@
+# Single source of truth for the research design.
+#
+# Source: proposal "Skripsi-Revisi Wedanta (Revisi P0)", Bab 1-3.
+# Anything that differs from the proposal is tagged with a DEV-xxx id and
+# explained in docs/DEVIATIONS.md. Decisions D1-D13 are recorded in
+# docs/DECISIONS.md. Do not edit values here without updating those files.
+schema_version: 1
+
+seeds:
+  master: 20261001            # plan shuffles and per-pair pgbench seeds derive from this
+
+# ---------------------------------------------------------------------------
+# Factorial design (Jain, 1991): path x concurrency, per profile, replicated.
+# ---------------------------------------------------------------------------
+design:
+  paths: [direct, pgbouncer]  # direct = baseline :5432, pgbouncer = treatment :6432
+  concurrency: [100, 200, 500, 1000]
+  high_concurrency: [500, 1000]   # scope of H1/H2
+  profiles: [R1, R2, R3, R4, R5]
+  rounds: 10
+  warmup_s: 60
+  measure_s: 300
+  randomize_path_order: true      # proposal: path order randomized every round
+  shuffle_cells_within_round: true  # D6 / DEV-005
+
+# ---------------------------------------------------------------------------
+# System under test: an emulated small server (DEV-001).
+# PostgreSQL and PgBouncer share this budget (DEV-003).
+# ---------------------------------------------------------------------------
+server:
+  vcpus: 2                    # one physical core + its SMT sibling (typical "2 vCPU" VPS)
+  memory_mb: 4096             # total for postgres + pgbouncer containers
+  pgbouncer_memory_mb: 128    # carved out of memory_mb; postgres gets the rest
+  colocate_pgbouncer: true    # DEV-003: pgbouncer on the same cpuset as postgres
+  swap: false                 # memory-swap = memory, like most VPS images
+
+postgres:
+  major: 18
+  port: 5432
+  max_connections: 1100
+  # Memory-derived settings are computed from the postgres container budget in M1
+  # (shared_buffers ~25%, effective_cache_size ~70%) and then locked.
+  work_mem: 4MB
+  maintenance_work_mem: 256MB  # proposal default 1GB does not fit a 4 GB server; see DEV-001
+  huge_pages: "off"            # DEV-001: no hugepage reservation on a 4 GB server
+  fsync: "on"
+  synchronous_commit: "on"
+  full_page_writes: "on"
+  random_page_cost: 1.1
+  checkpoint_timeout: 30min
+  checkpoint_completion_target: 0.9
+  max_wal_size: 8GB           # verified in M7: no checkpoint inside a 360 s run
+  password_encryption: scram-sha-256
+
+pgbouncer:
+  port: 6432
+  pool_mode: transaction
+  pool_size_rule: "2 * physical_cores + effective_spindles"
+  core_basis: server_physical_cores   # D1
+  effective_spindles: 0               # D2
+  reserve_pool_size: 0
+  max_client_conn: 1100
+  query_wait_timeout: 120             # PgBouncer default
+  max_prepared_statements: 200        # PgBouncer default since 1.24.0
+  match_listen_backlog: true          # D10 / DEV-006
+
+net_sysctls:                          # identical on client, postgres, pgbouncer
+  net.core.somaxconn: 4096
+  net.ipv4.ip_local_port_range: "10240 65000"
+  net.ipv4.tcp_tw_reuse: 1
+nofile_limit: 65536
+
+# ---------------------------------------------------------------------------
+# Workload
+# ---------------------------------------------------------------------------
+pgbench:
+  scale: 100                  # DEV-002 (proposal: 1000). ~1.5 GB, fits the 4 GB server
+  init_steps: dtGvp           # server-side generation
+  protocol: prepared
+  threads: auto               # = logical CPUs in the client cpuset
+  max_tries: 1
+  progress_s: 10
+  failures_detailed: true
+
+profiles:
+  R1:
+    description: read only
+    builtin: select-only
+    connect_per_transaction: false
+    writes: false
+  R2:
+    description: write (UPDATE + INSERT in one transaction)
+    scripts: {workloads/r2_write.sql: 1}
+    connect_per_transaction: false
+    writes: true
+  R3:
+    description: mixed, TPC-B-like
+    builtin: tpcb-like
+    connect_per_transaction: false
+    writes: true
+  R4:
+    description: mixed, new connection per transaction
+    builtin: tpcb-like
+    connect_per_transaction: true   # pgbench -C
+    writes: true
+  R5:
+    description: weighted online-competition mix (Tabel 3.6)
+    scripts:                         # weights must sum to 100; locked with the config
+      workloads/r5/autosave.sql: 35
+      workloads/r5/ambil_soal.sql: 25
+      workloads/r5/heartbeat.sql: 15
+      workloads/r5/login.sql: 10
+      workloads/r5/leaderboard.sql: 5
+      workloads/r5/daftar.sql: 4
+      workloads/r5/submit.sql: 4
+      workloads/r5/nomor_peserta.sql: 2
+    connect_per_transaction: false
+    writes: true
+
+r5_seed:                      # D12
+  random_seed: 20261001
+  peserta: 200000
+  kompetisi: 20
+  soal_per_kompetisi: 50
+  sesi_per_peserta: 1
+  jawaban_fraction: 0.5
+  hasil_fraction: 0.3
+  sesi_fillfactor: 90
+
+# ---------------------------------------------------------------------------
+# Reset between runs (Section 4.3)
+# ---------------------------------------------------------------------------
+reset:
+  policy: every_run           # D4 / DEV-004 (alternative: write_profiles_only)
+  prewarm: true               # D5 / DEV-007
+  create_strategy: FILE_COPY
+
+# ---------------------------------------------------------------------------
+# Calibration and lock (RM1, Section 7)
+# ---------------------------------------------------------------------------
+calibration:
+  duration_s: 60
+  concurrency: [100, 1000]
+  rotation_transactions: 50
+  pool_size_factors: [0.5, 1, 2]
+  pool_size_repetitions: 3
+  pool_size_profiles: [R3, R5]        # D3
+  tps_min_ratio: 0.95                 # D3
+  p95_max_ratio: 1.10                 # D3
+  max_adjustments_per_value: 1
+
+# ---------------------------------------------------------------------------
+# Runner
+# ---------------------------------------------------------------------------
+flags:
+  client_cpu_saturation: 0.95         # of the client cpuset
+  pgbouncer_cpu_saturation: 0.95      # of one core
+  tps_crosscheck_tolerance: 0.01
+
+retry:
+  infra_max_retries: 1                # D11; SUT outcomes are never retried
+
+preflight:
+  max_load_avg_per_cpu: 0.5
+  min_free_disk_gb: 20
+
+raw_logs:
+  keep: true                          # D9
+  compression: zstd
+
+monitoring:
+  scrape_interval_s: 5
+  scrape_timeout_s: 4
+  retention_days: 60
+
+# ---------------------------------------------------------------------------
+# Analysis (Subbab 3.6)
+# ---------------------------------------------------------------------------
+analysis:
+  alpha: 0.05
+  primary_test: wilcoxon_exact        # D7 (confirm with supervisor)
+  secondary_test: paired_t
+  multiple_comparison: holm           # family = 20 (H1 + H2 at c=500,1000 x 5 profiles)
+  effect_size_n: pairs                # D8 (Fritz, Morris & Richler, 2012)
+  bootstrap:
+    method: BCa
+    resamples: 10000
+    seed: 20261001
+  decimal_separator: ","
+  figure_dpi: 300
+
+# ---------------------------------------------------------------------------
+# Smoke campaign (Section 11). Outputs are labeled SMOKE everywhere.
+# ---------------------------------------------------------------------------
+smoke:
+  scale: 10
+  concurrency: [10, 50]
+  rounds: 2
+  warmup_s: 10
+  measure_s: 20
+  r5_seed_fraction: 0.05
+  max_minutes: 30

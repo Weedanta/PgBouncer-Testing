@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Secrets and local environment (never commit)
+.env
+secrets/*
+!secrets/.gitkeep
+
+# Host-specific, written by `make probe`
+config/host.env
+
+# Measurement data lives outside git (see docs/RUNBOOK.md)
+results/*
+!results/.gitkeep
+
+# Editors / OS
+*.stackdump
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# AI context & assistants
+CLAUDE.md
+CLAUDE*.md
+.claude/
+.agents/
+AGENTS.md
+.gemini/
+GEMINI.md
+.cursor/
+.cursorrules
+.copilot/
+.copilot-instructions.md
+.github/copilot-instructions.md
+.windsurf/
+.windsurfrules
+.aider*
+

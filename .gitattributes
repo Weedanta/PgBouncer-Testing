@@ -1,0 +1,7 @@
+# The stack runs on Linux; keep LF everywhere so shell scripts and SQL work
+# when the repo is cloned on Windows.
+* text=auto eol=lf
+*.png binary
+*.parquet binary
+*.xlsx binary
+*.zst binary

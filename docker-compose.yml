@@ -1,0 +1,224 @@
+# Playground (Gambar 3.3, Tabel 3.4). One host, one isolated bridge network `pgnet`,
+# one cpuset per container. Start through the Makefile so the env files are passed:
+#   docker compose --env-file config/versions.env --env-file config/host.env \
+#                  --env-file secrets/secrets.env ...
+# Only Grafana (3000) and Prometheus (9090) are published, and only on 127.0.0.1.
+name: pgbouncer-playground
+
+x-net-tuning: &net-tuning
+  # Identical on client, postgres and pgbouncer (both paths see the same TCP stack).
+  sysctls:
+    net.core.somaxconn: 4096
+    net.ipv4.ip_local_port_range: "10240 65000"
+    net.ipv4.tcp_tw_reuse: 1
+  ulimits:
+    nofile: {soft: 65536, hard: 65536}
+
+networks:
+  pgnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${PGNET_SUBNET:-172.29.0.0/24}
+
+secrets:
+  postgres_password: {file: ./secrets/postgres_password}
+  bench_password: {file: ./secrets/bench_password}
+  exporter_password: {file: ./secrets/exporter_password}
+  pgb_admin_password: {file: ./secrets/pgb_admin_password}
+  pgb_stats_password: {file: ./secrets/pgb_stats_password}
+  grafana_admin_password: {file: ./secrets/grafana_admin_password}
+
+volumes:
+  pgbouncer-log: {}
+  prometheus-data: {}
+  grafana-data: {}
+
+services:
+  # --- Lapisan basis data ---------------------------------------------------
+  postgres:
+    image: ${POSTGRES_IMAGE}
+    container_name: pgb-postgres
+    <<: *net-tuning
+    cpuset: "${CPUSET_POSTGRES}"
+    mem_limit: ${MEM_POSTGRES_MB}m
+    memswap_limit: ${MEM_POSTGRES_MB}m
+    shm_size: 1g
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_INITDB_ARGS: "--auth-local=trust --auth-host=scram-sha-256"
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+    volumes:
+      # PostgreSQL 18 images keep PGDATA under /var/lib/postgresql/18/docker.
+      # Bind mount on the host's local disk, not the overlay filesystem (Subbab 3.4).
+      - ${PGDATA_HOST}:/var/lib/postgresql
+      - ./config/active/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./config/active/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./config/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    secrets: [postgres_password, bench_password, exporter_password]
+    networks: [pgnet]
+    stop_grace_period: 2m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # --- Lapisan connection pooler ---------------------------------------------
+  pgbouncer:
+    build:
+      context: .
+      dockerfile: docker/pgbouncer.Dockerfile
+      args:
+        POSTGRES_IMAGE: ${POSTGRES_IMAGE}
+        PGBOUNCER_VERSION_PREFIX: ${PGBOUNCER_VERSION_PREFIX}
+    image: pgbouncer-playground/pgbouncer:local
+    container_name: pgb-pgbouncer
+    <<: *net-tuning
+    cpuset: "${CPUSET_PGBOUNCER}"
+    mem_limit: ${MEM_PGBOUNCER_MB}m
+    volumes:
+      - ./config/active/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./secrets/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+      - pgbouncer-log:/var/log/pgbouncer
+    networks: [pgnet]
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # --- Lapisan klien (pgbench + skrip otomasi Python) ------------------------
+  client:
+    build:
+      context: .
+      dockerfile: docker/client.Dockerfile
+      args:
+        POSTGRES_IMAGE: ${POSTGRES_IMAGE}
+        UV_IMAGE: ${UV_IMAGE}
+    image: pgbouncer-playground/client:local
+    container_name: pgb-client
+    <<: *net-tuning
+    init: true
+    # Same uid/gid as the host user, so results/ stays writable for `make analyze`.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    cpuset: "${CPUSET_CLIENT}"
+    mem_limit: ${MEM_CLIENT_MB}m
+    environment:
+      HOME: /tmp
+      PLAYGROUND_PG_HOST: postgres
+      PLAYGROUND_PGB_HOST: pgbouncer
+      PLAYGROUND_PROMETHEUS_URL: http://prometheus:9090
+      PLAYGROUND_GRAFANA_URL: http://grafana:3000
+      PLAYGROUND_PGBOUNCER_LOG: /var/log/pgbouncer/pgbouncer.log
+      PLAYGROUND_CPUSET_CLIENT: "${CPUSET_CLIENT}"
+      PLAYGROUND_CPUSET_PGBOUNCER: "${CPUSET_PGBOUNCER}"
+      PLAYGROUND_CPUSET_POSTGRES: "${CPUSET_POSTGRES}"
+    volumes:
+      - .:/work
+      - ${RESULTS_HOST:-./results}:/work/results
+      - pgbouncer-log:/var/log/pgbouncer:ro
+    secrets:
+      - postgres_password
+      - bench_password
+      - pgb_admin_password
+      - pgb_stats_password
+      - grafana_admin_password
+    networks: [pgnet]
+    depends_on:
+      pgbouncer: {condition: service_healthy}
+
+  # --- Lapisan monitoring ----------------------------------------------------
+  postgres-exporter:
+    image: ${POSTGRES_EXPORTER_IMAGE}
+    container_name: pgb-postgres-exporter
+    cpuset: "${CPUSET_MONITOR}"
+    mem_limit: 256m
+    environment:
+      DATA_SOURCE_URI: "postgres:5432/postgres?sslmode=disable"
+      DATA_SOURCE_USER: exporter
+      DATA_SOURCE_PASS_FILE: /run/secrets/exporter_password
+    secrets: [exporter_password]
+    networks: [pgnet]
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  pgbouncer-exporter:
+    image: ${PGBOUNCER_EXPORTER_IMAGE}
+    container_name: pgb-pgbouncer-exporter
+    cpuset: "${CPUSET_MONITOR}"
+    mem_limit: 128m
+    command:
+      - "--pgBouncer.connectionString=postgres://pgb_stats:${PGB_STATS_PASSWORD}@pgbouncer:6432/pgbouncer?sslmode=disable"
+    networks: [pgnet]
+    depends_on:
+      pgbouncer: {condition: service_healthy}
+
+  node-exporter:
+    image: ${NODE_EXPORTER_IMAGE}
+    container_name: pgb-node-exporter
+    cpuset: "${CPUSET_MONITOR}"
+    mem_limit: 128m
+    pid: host
+    command: ["--path.rootfs=/host"]
+    volumes:
+      - /:/host:ro   # no rslave: Docker Desktop (WSL2) rejects it on /
+    networks: [pgnet]
+
+  cadvisor:
+    image: ${CADVISOR_IMAGE}
+    container_name: pgb-cadvisor
+    cpuset: "${CPUSET_MONITOR}"
+    mem_limit: 512m
+    privileged: true
+    devices: ["/dev/kmsg"]
+    command: ["--docker_only=true", "--housekeeping_interval=5s", "--store_container_labels=false"]
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks: [pgnet]
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE}
+    container_name: pgb-prometheus
+    cpuset: "${CPUSET_MONITOR}"
+    mem_limit: 1536m
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=60d
+      - --web.enable-lifecycle
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports: ["127.0.0.1:9090:9090"]
+    networks: [pgnet]
+
+  grafana:
+    image: ${GRAFANA_IMAGE}
+    container_name: pgb-grafana
+    cpuset: "${CPUSET_MONITOR}"
+    mem_limit: 512m
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    secrets: [grafana_admin_password]
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports: ["127.0.0.1:3000:3000"]
+    networks: [pgnet]
+    depends_on: [prometheus]

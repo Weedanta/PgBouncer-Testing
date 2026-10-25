@@ -273,6 +273,24 @@ def calibrate(
 
 
 @app.command()
+def memcheck(
+    smoke_dataset: bool = typer.Option(
+        False, "--smoke-dataset", help="use the smoke dataset (pipeline test only)"
+    ),
+) -> None:
+    """DEV-019: memory limits under the heaviest load (R3, highest c, both paths)."""
+    from playground.envfile import read_env
+    from playground.memcheck import run_memcheck
+
+    if not HOST_ENV.exists():
+        console.print("[red]config/host.env missing: run `make probe` first[/red]")
+        raise typer.Exit(1)
+    out = run_memcheck(_cfg(), _ep(), read_env(HOST_ENV), "smoke" if smoke_dataset else "campaign")
+    console.print(f"report: {out / 'REPORT.md'}")
+    console.print((out / "REPORT.md").read_text(encoding="utf-8"))
+
+
+@app.command()
 def adjust(param: str, value: int, reason: str) -> None:
     """Record the one allowed adjustment of a Tabel 3.2 value (then: make render reload)."""
     from playground.calibrate import adjust as run

@@ -18,11 +18,23 @@ Command reference: [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
 ## Quick start
 
+The campaign host is Windows 11 + WSL2 (decided 2026-10-23), WSL capped at 10 GB (DEV-019).
+No Ubuntu in WSL yet? Start with [docs/PANDUAN-PELAKSANAAN.md](docs/PANDUAN-PELAKSANAAN.md). From Ubuntu (WSL):
+
+```bash
+S=/mnt/c/Users/<you>/OneDrive/Documents/Skripsi/Playground/scripts/wsl_run.sh
+bash $S setup && bash $S smoke && bash $S data && bash $S memcheck && bash $S calibrate
+bash $S lock && bash $S campaign && bash $S analyze
+```
+
+The same steps with `make`, inside the WSL copy (`~/pgbouncer-playground`):
+
 ```bash
 make sync lint test                 # Python env, checks, unit tests
 make probe secrets build up         # host split, passwords, images, stack
 make init-data-smoke smoke          # full pipeline on a tiny dataset (labeled SMOKE)
-make init-data calibrate lock       # real dataset (scale 100, ~1.5 GB), RM1, lock
+make init-data memcheck             # real dataset (scale 100, ~1.5 GB), memory check at c = 1000
+make calibrate lock                 # RM1, lock
 make campaign CAMPAIGN=C1           # 150 runs (~2.5 h incl. resets), resumable
 make analyze export-thesis CAMPAIGN=C1
 ```

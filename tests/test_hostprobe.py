@@ -7,9 +7,10 @@ import copy
 from playground.config import load_experiment
 from playground.hostprobe import Core, dataset_estimate_mb, plan_resources, warnings
 
-# Weda's laptop: Ryzen 7 6800H, 8 physical cores / 16 threads, WSL2 with 13 GB.
+# Weda's laptop: Ryzen 7 6800H, 8 physical cores / 16 threads, WSL2 capped at 10 GB
+# (DEV-019). The VM sees a little less than the cap; 9,800 MB is a conservative figure.
 LAPTOP = [Core(socket=0, core=i, cpus=[2 * i, 2 * i + 1]) for i in range(8)]
-WSL_MB = 13 * 1024
+WSL_MB = 9800
 
 
 def _dataset_warnings(cfg: dict, mem_pg: int) -> list[str]:
@@ -20,7 +21,7 @@ def test_laptop_split_gives_pool_six():
     cfg = load_experiment()
     plan = plan_resources(LAPTOP, WSL_MB, cfg["resources"])
     assert plan["POSTGRES_PHYSICAL_CORES"] == 3  # 2 x 3 + 0 = 6
-    assert plan["MEM_POSTGRES_MB"] > 4000
+    assert plan["MEM_POSTGRES_MB"] > 5000  # about 5.4 GB with the DEV-019 budget
 
 
 def test_scale_100_fits_in_memory_on_the_laptop():

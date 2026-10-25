@@ -3,6 +3,7 @@
 #
 #   make sync probe secrets render build up      # one-time setup
 #   make init-data smoke                         # dataset + full pipeline test
+#   make memcheck                                # DEV-019: memory limits at the highest c
 #   make calibrate lock                          # RM1 (Subbab 3.3)
 #   make campaign CAMPAIGN=C1                    # RM2: 150 runs, about 2.5 h
 #   make analyze export-thesis CAMPAIGN=C1       # Bab 5 tables and figures
@@ -21,7 +22,7 @@ define need_campaign
 endef
 
 .PHONY: help sync validate lint test probe secrets render prep build pin up down ps logs \
-        reload init-data init-data-smoke check-metrics smoke calibrate adjust lock plan \
+        reload init-data init-data-smoke check-metrics smoke memcheck calibrate adjust lock plan \
         campaign resume status evidence analyze export-thesis clean-data clean-results
 
 help:
@@ -92,6 +93,9 @@ check-metrics: ## verify every Prometheus series of Tabel 3.8 (run under load)
 # --- M7 smoke --------------------------------------------------------------------
 smoke: ## full pipeline on the smoke dataset (labeled SMOKE, never for the thesis)
 	$(EXEC) smoke
+
+memcheck: ## DEV-019: memory limits under the heaviest load (R3, highest c, both paths)
+	$(EXEC) memcheck
 
 # --- M8 calibration and lock (RM1) -----------------------------------------------
 calibrate: ## RM1: step A + the four checks of "pengamatan awal"

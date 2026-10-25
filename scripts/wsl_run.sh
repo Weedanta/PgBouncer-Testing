@@ -1,16 +1,32 @@
 #!/usr/bin/env bash
-# One-shot runner for Windows + Docker Desktop (WSL2). Run it inside Ubuntu (WSL):
+# Runner for the campaign host: Windows 11 + Docker Desktop (WSL2 backend), proposal v5.
+# Run it inside Ubuntu (WSL), one stage at a time, in this order:
 #
-#   bash /mnt/c/Users/<you>/OneDrive/Documents/Skripsi/Playground/scripts/wsl_run.sh [setup|smoke|all|down]
+#   S=/mnt/c/Users/<you>/OneDrive/Documents/Skripsi/Playground/scripts/wsl_run.sh
+#   bash $S setup        # copy repo to the WSL disk, uv env, probe, secrets, build, start stack
+#   bash $S smoke        # smoke dataset + smoke campaign + check-metrics + evidence (~40 min)
+#   bash $S data         # real dataset: scale 100 + R5 seed + template
+#   bash $S memcheck     # DEV-019: memory limits at the highest c, both paths (~5 min)
+#   bash $S calibrate    # RM1: four checks (~40 min), report copied to _run_logs/
+#   bash $S lock         # freeze the configuration (only after a passing calibration)
+#   bash $S campaign     # RM2: 150 runs (~2.5 h), asks for confirmation; CAMPAIGN=C1 by default
+#   bash $S resume       # continue an interrupted campaign
+#   bash $S analyze      # tables, figures, REPORT.md; copied to _run_logs/<campaign>/
+#   bash $S down         # stop the stack (data stays)
+#   (bash $S all = setup + smoke)
 #
-# - copies the repo from OneDrive to the WSL disk (~/pgbouncer-playground), because
-#   PostgreSQL data and results must not live on OneDrive or /mnt/c (RUNBOOK section 1);
-# - setup: uv env, probe, secrets, build images, start all containers (docker compose);
-# - smoke: smoke dataset + smoke campaign + check-metrics under load + evidence;
-# - writes a log and a STATUS file to <Skripsi>/_run_logs/ so progress can be followed
-#   from Windows, and copies the smoke analysis there.
+# - Only `setup` copies the repo from OneDrive to the WSL disk (~/pgbouncer-playground),
+#   because PostgreSQL data and results must not live on OneDrive or /mnt/c (Microsoft's
+#   WSL guidance; RUNBOOK section 1). After `lock`, setup refuses to copy again, so the
+#   locked configuration and its git commit in the WSL copy are never overwritten.
+# - Writes a log and a STATUS file to <Skripsi>/_run_logs/ so progress can be followed
+#   from Windows, and copies reports there.
 set -uo pipefail
 STAGE="${1:-all}"
+case "$STAGE" in
+  setup|smoke|all|down|data|memcheck|calibrate|lock|campaign|resume|analyze) ;;
+  *) echo "stage tidak dikenal: $STAGE (lihat komentar di awal skrip)" >&2; exit 2;;
+esac
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKRIPSI="$(dirname "$SRC")"
 DST="$HOME/pgbouncer-playground"
@@ -42,15 +58,19 @@ export PATH="$HOME/.local/bin:$PATH"
 
 mem_mb=$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1024 ))
 status "memori WSL: ${mem_mb} MB, CPU: $(nproc)"
-if [ "$mem_mb" -lt 11000 ]; then
+# DEV-019: WSL is capped at 10 GB so Windows keeps about 5 GB of the 15.3 GB laptop.
+if [ "$mem_mb" -gt 11500 ]; then
+  status "PERINGATAN: WSL memakai ${mem_mb} MB; Windows bisa kekurangan memori dan melakukan paging. Disarankan memory=10GB di .wslconfig (DEV-019)."
+fi
+if [ "$mem_mb" -lt 9000 ]; then
   win_user="$(cmd.exe /c 'echo %USERNAME%' 2>/dev/null | tr -d '\r')"
   cfg="/mnt/c/Users/${win_user}/.wslconfig"
   echo
-  echo "Memori WSL terlalu kecil untuk pembagian sumber daya Playground (perlu sekitar 13 GB)."
+  echo "Memori WSL terlalu kecil untuk pembagian sumber daya Playground (perlu sekitar 10 GB)."
   if [ -n "$win_user" ] && [ ! -e "$cfg" ]; then
-    read -r -p "Buat $cfg dengan memory=13GB, processors=16, swap=0? [y/N] " ans
+    read -r -p "Buat $cfg dengan memory=10GB, processors=16, swap=0? [y/N] " ans
     if [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
-      printf '[wsl2]\nmemory=13GB\nprocessors=16\nswap=0\n' > "$cfg"
+      printf '[wsl2]\nmemory=10GB\nprocessors=16\nswap=0\n' > "$cfg"
       status "dibuat $cfg"
     fi
   elif [ -e "$cfg" ]; then
@@ -59,7 +79,13 @@ if [ "$mem_mb" -lt 11000 ]; then
   fail "Atur memori WSL (lihat di atas), lalu di PowerShell: wsl --shutdown, buka Ubuntu lagi, dan jalankan skrip ini lagi."
 fi
 
-# --- copy the repo to the WSL disk ------------------------------------------------
+CAMPAIGN="${CAMPAIGN:-C1}"
+
+# --- copy the repo to the WSL disk (setup only) -----------------------------------
+copy_repo() {
+if [ -f "$DST/config/locked/LOCK.json" ]; then
+  fail "konfigurasi sudah dikunci di $DST; salinan tidak ditimpa. Ubahan di OneDrive tidak dipakai lagi."
+fi
 status "menyalin repo dari OneDrive ke $DST"
 mkdir -p "$DST"
 tar -C "$SRC" \
@@ -68,6 +94,12 @@ tar -C "$SRC" \
   --exclude='*/__pycache__' --exclude=./.pytest_cache --exclude=./.ruff_cache \
   -cf - . | tar -C "$DST" -xf - || fail "gagal menyalin repo"
 mkdir -p "$DST/results" "$DST/secrets" "$DST/config/locked"
+}
+
+if [ "$STAGE" = "setup" ] || [ "$STAGE" = "all" ]; then
+  copy_repo
+fi
+[ -d "$DST" ] || fail "$DST belum ada: jalankan dulu 'setup'"
 cd "$DST" || fail "tidak bisa masuk ke $DST"
 
 run() { status "> $*"; "$@" || fail "$*"; }
@@ -93,7 +125,7 @@ fi
 
 if [ "$STAGE" = "smoke" ] || [ "$STAGE" = "all" ]; then
   run make init-data-smoke
-  status "smoke campaign dimulai (sekitar 25 menit)"
+  status "smoke campaign dimulai (sekitar 40 menit)"
   make smoke > "$LOGDIR/smoke-$STAMP.log" 2>&1 &
   smoke_pid=$!
   sleep 150
@@ -109,4 +141,55 @@ if [ "$STAGE" = "smoke" ] || [ "$STAGE" = "all" ]; then
   cp "results/$cid/runs.csv" "results/$cid/attempts.csv" "$LOGDIR/$cid/" 2>/dev/null
   status "smoke selesai: $cid (analisis disalin ke _run_logs/$cid)"
 fi
+
+if [ "$STAGE" = "data" ]; then
+  run make init-data
+  cp results/datasets/campaign-*.json "$LOGDIR/" 2>/dev/null
+fi
+
+if [ "$STAGE" = "memcheck" ]; then
+  run make memcheck
+  rep="$(ls -1d results/memcheck/*/ 2>/dev/null | grep -v SMOKE | tail -n1)"
+  if [ -n "$rep" ]; then
+    mkdir -p "$LOGDIR/memcheck"
+    cp -r "$rep" "$LOGDIR/memcheck/"
+    status "laporan uji memori disalin ke _run_logs/memcheck/$(basename "$rep")"
+    grep -q "Kesimpulan: LOLOS" "$rep/REPORT.md" || fail "uji memori belum lolos: baca _run_logs/memcheck/$(basename "$rep")/REPORT.md"
+  fi
+fi
+
+if [ "$STAGE" = "calibrate" ]; then
+  run make calibrate
+  rep=""
+  for d in results/calibration/*/; do
+    case "$d" in *SMOKE*) ;; *) [ -d "$d" ] && rep="$d";; esac
+  done
+  if [ -n "$rep" ]; then
+    mkdir -p "$LOGDIR/calibration"
+    cp -r "$rep" "$LOGDIR/calibration/"
+    status "laporan kalibrasi disalin ke _run_logs/calibration/$(basename "$rep")"
+  fi
+fi
+
+if [ "$STAGE" = "lock" ]; then
+  run make lock
+  cp -r config/locked "$LOGDIR/locked"
+  status "konfigurasi terkunci; salinannya ada di _run_logs/locked"
+fi
+
+if [ "$STAGE" = "campaign" ] || [ "$STAGE" = "resume" ]; then
+  [ -f config/locked/LOCK.json ] || fail "konfigurasi belum dikunci: jalankan 'calibrate' lalu 'lock'"
+  run make "$STAGE" CAMPAIGN="$CAMPAIGN"
+  make status CAMPAIGN="$CAMPAIGN" > "$LOGDIR/status-$CAMPAIGN.txt" 2>&1
+fi
+
+if [ "$STAGE" = "analyze" ]; then
+  run make analyze CAMPAIGN="$CAMPAIGN"
+  run make export-thesis CAMPAIGN="$CAMPAIGN"
+  mkdir -p "$LOGDIR/$CAMPAIGN"
+  cp -r "results/$CAMPAIGN/analysis" "results/$CAMPAIGN/thesis" "$LOGDIR/$CAMPAIGN/" 2>/dev/null
+  cp "results/$CAMPAIGN/runs.csv" "results/$CAMPAIGN/attempts.csv" "$LOGDIR/$CAMPAIGN/" 2>/dev/null
+  status "analisis disalin ke _run_logs/$CAMPAIGN"
+fi
+
 status "selesai"

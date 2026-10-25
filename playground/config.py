@@ -174,6 +174,16 @@ def validate(cfg: dict[str, Any]) -> list[str]:
         "calibration levels must be design levels and include the highest one",
     )
 
+    mc = cfg.get("memcheck")
+    if mc is not None:
+        need(mc["profile"] in PROFILES, "memcheck.profile must be one of R1..R5")
+        need(
+            set(mc["paths"]) <= {"direct", "pgbouncer"} and "direct" in mc["paths"],
+            "memcheck.paths must include direct (the path that opens one backend per client)",
+        )
+        need(0 < mc["headroom_fraction"] <= 1, "memcheck.headroom_fraction must be in (0, 1]")
+        need(mc["measure_s"] > 0 and mc["warmup_s"] >= 0, "memcheck durations must be positive")
+
     smoke = cfg["smoke"]
     need(smoke["rounds"] >= 2, "smoke rounds must be >= 2 (factorial error term)")
     need(max(smoke["concurrency"]) < top, "smoke concurrency must stay below the real levels")

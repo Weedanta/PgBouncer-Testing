@@ -41,6 +41,7 @@ GEMINI.md
 .windsurf/
 .windsurfrules
 .aider*
+docs/
 
 # Rendered from experiment.yaml + host.env (`make render`); the frozen copy is config/locked/
 config/active/

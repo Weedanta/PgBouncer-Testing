@@ -61,7 +61,7 @@ def test_dedicated_layout_split():
     assert plan["CPUSET_CLIENT"] == "3,11,4,12"  # ceil(0.25 * 5) = 2 cores
     assert plan["CPUSET_POSTGRES"] == "5,13,6,14,7,15"
     assert plan["POSTGRES_PHYSICAL_CORES"] == 3
-    assert plan["MEM_POSTGRES_MB"] == 15600 - 2048 - 1536 - 3072 - 256
+    assert plan["MEM_POSTGRES_MB"] == 15600 - 1024 - 1024 - 2048 - 256  # DEV-019
 
 
 def test_small_server_layout_shares_one_core():

@@ -10,7 +10,6 @@ dependencies = [
     "numpy>=2.0",
     "scipy>=1.14",
     "statsmodels>=0.14",
-    "pingouin>=0.5.5",
     "pyarrow>=17",
     "matplotlib>=3.9",
     "openpyxl>=3.1",

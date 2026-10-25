@@ -16,7 +16,8 @@ seeds:
 # Factorial design (Subbab 3.2, Tabel 3.1, Tabel 3.7)
 # Factor A: connection path (2 levels). Factor B: concurrency (5 levels).
 # Repeated for each of the 5 request profiles, 3 rounds (replications, Jain 1991).
-# 2 x 5 x 5 x 3 = 150 measured runs, about 2.5 h (10 s warmup + 30 s measurement + reset).
+# 2 x 5 x 5 x 3 = 150 measured runs, about 2.5 h (10 s warmup + 30 s measurement + reset;
+# 100 min of pure measurement, the rest is resets, snapshots and the Prometheus export).
 # ---------------------------------------------------------------------------
 design:
   paths: [direct, pgbouncer]      # direct = baseline :5432, pgbouncer = treatment :6432
@@ -43,9 +44,13 @@ resources:
   pgbouncer_cores: 1              # PgBouncer is single-threaded: one physical core
   client_core_share: 0.25         # of the remaining physical cores (validated in smoke)
   memory_mb:                      # postgres gets what is left after these
-    host_reserved: 2048
-    monitoring: 1536
-    client: 3072
+    # DEV-019 (25 Oct 2026): WSL2 is capped at 10 GB (.wslconfig) so Windows keeps about
+    # 5 GB of the laptop's 15.3 GB and does not page the WSL VM out during measurement.
+    # The non-PostgreSQL reservations were trimmed so PostgreSQL loses only about 0.5 GB
+    # (about 5.5 GB instead of 6 GB). Checked under load by `make memcheck`.
+    host_reserved: 1024           # WSL kernel, dockerd/containerd, shell (was 2048)
+    monitoring: 1024              # exporters + Prometheus + Grafana, a few hours of data (was 1536)
+    client: 2048                  # pgbench + runner; peak checked at c = 1000 (was 3072)
     pgbouncer: 256
   small_server:                   # only used when layout = small_server (DEV-001, DEV-003)
     vcpus: 2
@@ -247,6 +252,19 @@ analysis:
     persistent_profiles_only: true    # R4 (-C) opens and closes backends all the time
   decimal_separator: ","
   figure_dpi: 300
+
+# ---------------------------------------------------------------------------
+# Memory check under the heaviest load (DEV-019). Run after `make init-data`, before
+# `make calibrate`. R3 at the highest level on both paths, short runs; the report says
+# whether the container memory limits hold (no OOM, no restart, enough headroom) and
+# whether the direct path really holds one backend per client. Not performance data.
+# ---------------------------------------------------------------------------
+memcheck:
+  profile: R3
+  paths: [direct, pgbouncer]
+  warmup_s: 5
+  measure_s: 30
+  headroom_fraction: 0.85             # peak must stay below 85 % of the container limit
 
 # ---------------------------------------------------------------------------
 # Smoke campaign. Outputs are labeled SMOKE everywhere and never used in the thesis.

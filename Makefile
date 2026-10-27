@@ -113,8 +113,8 @@ adjust: ## one documented adjustment: make adjust PARAM=default_pool_size VALUE=
 	$(PG) adjust "$(PARAM)" "$(VALUE)" "$(REASON)"
 	@echo "now: make reload && make calibrate"
 
-lock: pin ## freeze config + workloads + versions into config/locked/, git tag
-	$(EXEC) lock
+lock: pin ## freeze config + workloads + versions into config/locked/, git tag; DEV-024: ACCEPT_CHECK4="reason"
+	$(EXEC) lock $(if $(ACCEPT_CHECK4),--accept-check4-exception "$(ACCEPT_CHECK4)")
 	git add config/locked config/calibration_overrides.yaml 2>/dev/null || git add config/locked
 	git commit -m "Lock PgBouncer configuration after calibration"
 	git tag "config-locked-$$(date +%Y%m%d)"

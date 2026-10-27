@@ -40,6 +40,10 @@ services:
     image: ${POSTGRES_IMAGE}
     container_name: pgb-postgres
     <<: *net-tuning
+    # DEV-023: docker-init is PID 1 and reaps orphans (a timed-out healthcheck's
+    # pg_isready); with postmaster as PID 1, PostgreSQL 18 treats such an orphan's exit
+    # as a crashed child and restarts every backend.
+    init: true
     cpuset: "${CPUSET_POSTGRES}"
     mem_limit: ${MEM_POSTGRES_MB}m
     memswap_limit: ${MEM_POSTGRES_MB}m

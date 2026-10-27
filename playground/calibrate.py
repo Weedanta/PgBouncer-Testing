@@ -514,3 +514,36 @@ def latest_report(passed_only: bool = True) -> Path | None:
         if rep.exists() and (not passed_only or json.loads(rep.read_text())["passed"]):
             return d
     return None
+
+
+def check4_exception(report_dir: Path, reason: str) -> dict[str, Any]:
+    """DEV-024: accept a calibration whose only failure is check 4, with a written reason.
+
+    Checks 1-3, the lint and the pool restore must still pass; only the D3 pool-size
+    criterion may fail. The failing cells are copied into LOCK.json with the reason.
+    """
+    if not reason.strip():
+        raise ValueError("a written reason is required")
+    if report_dir.name.endswith("-SMOKE"):
+        raise ValueError("a smoke calibration cannot be accepted")
+    r = json.loads((report_dir / "REPORT.json").read_text(encoding="utf-8"))
+    if r.get("quick"):
+        raise ValueError("a quick calibration cannot be accepted")
+    if r["passed"]:
+        raise ValueError("this calibration passed; no exception is needed")
+    failed = [
+        k for k in ("check1_error_free", "check2_rotation", "check3_limits") if not r[k]["passed"]
+    ]
+    if failed or not r["step_a"]["lint_passed"] or not r["live_pool_restored"]:
+        raise ValueError(f"only check 4 may fail; also failed: {failed or 'lint or pool restore'}")
+    return {
+        "report": str(report_dir),
+        "pool_size": r["step_a"]["pool_size_under_test"],
+        "failed_check4_cells": [
+            {k: v[k] for k in ("profile", "concurrency", "tps_ratio", "p95_ratio")}
+            for v in r["check4_pool_size"]["verdicts"]
+            if not v["passed"]
+        ],
+        "reason": reason,
+        "decided_utc": datetime.now(UTC).isoformat(),
+    }

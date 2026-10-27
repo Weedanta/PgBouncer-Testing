@@ -313,16 +313,27 @@ def lock_cmd(
     allow_without_calibration: bool = typer.Option(
         False, help="only for pipeline tests: lock without a passing calibration"
     ),
+    accept_check4_exception: str = typer.Option(
+        "", help="DEV-024: lock on the latest calibration although check 4 failed (reason)"
+    ),
 ) -> None:
     """Freeze config/active + workloads + versions into config/locked/ (Subbab 3.3)."""
     from playground import lock
-    from playground.calibrate import latest_report
+    from playground.calibrate import check4_exception, latest_report
 
     report = latest_report(passed_only=True)
+    exception = None
+    if report is None and accept_check4_exception:
+        report = latest_report(passed_only=False)
+        try:
+            exception = check4_exception(report, accept_check4_exception) if report else None
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
     if report is None and not allow_without_calibration:
         console.print("[red]no passing calibration report found (make calibrate)[/red]")
         raise typer.Exit(1)
-    info = lock.write_lock(_ep(), report)
+    info = lock.write_lock(_ep(), report, exception)
     console.print_json(json.dumps({k: v for k, v in info.items() if k != "inputs"}))
 
 

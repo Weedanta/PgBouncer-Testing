@@ -69,7 +69,11 @@ def runtime_versions(ep: Endpoints) -> dict[str, Any]:
     }
 
 
-def write_lock(ep: Endpoints, calibration_report: Path | None) -> dict[str, Any]:
+def write_lock(
+    ep: Endpoints,
+    calibration_report: Path | None,
+    calibration_exception: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     LOCK_DIR.mkdir(parents=True, exist_ok=True)
     for name in ACTIVE_FILES:
         shutil.copy2(ACTIVE / name, LOCK_DIR / name)
@@ -87,6 +91,7 @@ def write_lock(ep: Endpoints, calibration_report: Path | None) -> dict[str, Any]
     lock = {
         "locked_utc": datetime.now(UTC).isoformat(),
         "calibration_report": str(calibration_report) if calibration_report else None,
+        "calibration_exception": calibration_exception,  # DEV-024
         "inputs": inputs,
         "inputs_sha256": combined(inputs),
         "locked_files": {

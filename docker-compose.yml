@@ -172,21 +172,32 @@ services:
       - /:/host:ro   # no rslave: Docker Desktop (WSL2) rejects it on /
     networks: [pgnet]
 
-  cadvisor:
-    image: ${CADVISOR_IMAGE}
-    container_name: pgb-cadvisor
+  # DEV-020: cAdvisor cannot register the containers on Docker Desktop (WSL2): the
+  # container cgroups exist but only the root cgroup is exported. This exporter reads
+  # the same cgroup counters through the Docker Engine API (the data behind
+  # `docker stats`) and serves them under cAdvisor's metric names and `name` label.
+  container-exporter:
+    # Same build as the client (one image); a build section keeps `compose pull
+    # --ignore-buildable` from trying to pull this local tag from a registry.
+    build:
+      context: .
+      dockerfile: docker/client.Dockerfile
+      args:
+        POSTGRES_IMAGE: ${POSTGRES_IMAGE}
+        UV_IMAGE: ${UV_IMAGE}
+    image: pgbouncer-playground/client:local
+    container_name: pgb-container-exporter
     cpuset: "${CPUSET_MONITOR}"
-    mem_limit: 512m
-    privileged: true
-    devices: ["/dev/kmsg"]
-    command: ["--docker_only=true", "--housekeeping_interval=5s", "--store_container_labels=false"]
+    mem_limit: 128m
+    user: "0:0"                     # the Docker socket belongs to root
+    working_dir: /work
+    command: ["python", "-m", "playground.container_exporter", "--port", "9338"]
     volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-      - /dev/disk/:/dev/disk:ro
+      - .:/work:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     networks: [pgnet]
+    depends_on:
+      client: {condition: service_started}
 
   prometheus:
     image: ${PROMETHEUS_IMAGE}
@@ -199,7 +210,10 @@ services:
       - --storage.tsdb.retention.time=60d
       - --web.enable-lifecycle
     volumes:
-      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Mount the folder, not the single file: setup re-copies the repo, which gives
+      # prometheus.yml a new inode, and Docker Desktop (WSL2) then fails to start a
+      # container whose single-file bind mount points at the old one (27 Oct 2026).
+      - ./config/prometheus:/etc/prometheus:ro
       - prometheus-data:/prometheus
     ports: ["127.0.0.1:9090:9090"]
     networks: [pgnet]

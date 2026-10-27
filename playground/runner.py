@@ -390,7 +390,7 @@ def execute(cfg: dict[str, Any], ep: Endpoints, req: RunRequest) -> dict[str, An
     result["pgbouncer_cpu_mean"] = cpu.get("pgbouncer")
     result["postgres_cpu_mean"] = cpu.get("postgres")
     # RM2 v5: private memory (RSS) of PostgreSQL and PgBouncer during the measurement, the
-    # input of the per-connection memory and capacity analysis (analysis/pipeline.memory).
+    # input of the per-connection memory and capacity analysis (done outside this repo).
     for name in ("postgres", "pgbouncer"):
         rss = (
             prom.container_mean(prom_df, "mem_rss_bytes_by_container", f"pgb-{name}")

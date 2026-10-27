@@ -24,7 +24,7 @@ design:
   # 1 is below the pool size (pure cost of the extra hop), 10 just above it, 100-1000 far
   # above it. Roughly log-spaced so the trend is visible over three orders of magnitude.
   concurrency: [1, 10, 100, 500, 1000]
-  high_concurrency: [500, 1000]   # scope of H1/H2 (Subbab 1.2)
+  high_concurrency: [500, 1000]   # scope of H1/H2 (Subbab 3.6); tested outside this repo
   profiles: [R1, R2, R3, R4, R5]
   rounds: 3                       # replications r of the two-factor design (Tabel 3.7 v5)
   warmup_s: 10                    # not recorded; dataset is in memory (scale 100)
@@ -234,24 +234,11 @@ monitoring:
   sampler_interval_s: 5               # runner's own SHOW POOLS / pg_stat_activity sampler
 
 # ---------------------------------------------------------------------------
-# Analysis (Subbab 3.6)
+# Statistics (Subbab 3.7) are NOT done in this repository. The playground only produces
+# the measurement data: results/<campaign>/runs.csv (one row per run: TPS, latency
+# mean/sd/p50/p95/p99, failures, RSS and CPU per container, backends, pool queue, lock
+# waits, flags) plus the run directories. Weda runs the statistics in an external tool.
 # ---------------------------------------------------------------------------
-analysis:
-  alpha: 0.05
-  # Subbab 3.6 v5: two-factor full factorial with replications (Jain, 1991) per profile and
-  # metric, on log-transformed values. H1/H2 = one-sided contrast pgbouncer vs direct at
-  # c = 500 and 1000 using the pooled error of the model (df = 2 x 5 x (3 - 1) = 20).
-  primary_test: factorial_anova_log
-  log_transform: true
-  multiple_comparison: holm           # family = 20 (H1 + H2 at c=500,1000 x 5 profiles)
-  effect_size: partial_eta_squared    # interaction and main effects (Fritz dkk., 2012)
-  # Memory and capacity (RM2 v5): per-connection memory = slope of container RSS against
-  # the number of connections; capacity = connections that fit in an equal memory budget.
-  memory:
-    budgets_mb: [256, 512, 1024]
-    persistent_profiles_only: true    # R4 (-C) opens and closes backends all the time
-  decimal_separator: ","
-  figure_dpi: 300
 
 # ---------------------------------------------------------------------------
 # Memory check under the heaviest load (DEV-019). Run after `make init-data`, before

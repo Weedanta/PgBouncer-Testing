@@ -1,10 +1,10 @@
 """Command-line entry point: `playground <command>` (usually called through `make`).
 
 Host-side commands (run with `uv run playground ...` on the Linux/WSL host):
-  validate, probe, secrets, render, lint, analyze, export-thesis
+  validate, probe, secrets, render, lint
 Client-container commands (run with `docker compose exec client playground ...`):
-  init-data, check-metrics, smoke, calibrate, adjust, lock, plan, campaign, resume, status,
-  evidence
+  init-data, check-metrics, smoke, calibrate, pool-sweep, adjust, lock, plan, campaign, resume,
+  status, evidence
 """
 
 from __future__ import annotations
@@ -154,24 +154,6 @@ def lint(report: Path | None = None) -> None:
         raise typer.Exit(1)
 
 
-@app.command()
-def analyze(campaign: str, out: Path | None = None) -> None:
-    """Statistics, tables, figures and REPORT.md for one campaign (Subbab 3.6)."""
-    from analysis.pipeline import run_analysis
-
-    path = run_analysis(results_dir() / campaign, _cfg(), out)
-    console.print(f"[green]analysis written to {path}[/green]")
-
-
-@app.command("export-thesis")
-def export_thesis(campaign: str) -> None:
-    """Copy thesis-ready tables/figures with Indonesian captions."""
-    from analysis.export import export
-
-    path = export(results_dir() / campaign / "analysis")
-    console.print(f"[green]thesis material in {path}[/green]")
-
-
 # ---------------------------------------------------------------------------
 # client container
 # ---------------------------------------------------------------------------
@@ -219,8 +201,8 @@ def _campaign(campaign_id: str, smoke: bool):
 
 
 @app.command()
-def smoke(analyze_after: bool = True) -> None:
-    """Full pipeline on the small smoke dataset (labeled SMOKE, never used in the thesis)."""
+def smoke() -> None:
+    """All runner steps on the small smoke dataset (labeled SMOKE, never used in the thesis)."""
     from playground.data import dataset_ready
     from playground.data import init_data as run_init
 
@@ -243,10 +225,6 @@ def smoke(analyze_after: bool = True) -> None:
     console.print(
         f"smoke runs finished in {minutes:.1f} min (limit {cfg['smoke']['max_minutes']} min)"
     )
-    if analyze_after:
-        from analysis.pipeline import run_analysis
-
-        console.print(f"analysis: {run_analysis(c.dir, cfg)}")
     console.print_json(json.dumps(c.status()))
 
 
@@ -270,6 +248,25 @@ def calibrate(
         _cfg(), _ep(), host_env, "smoke" if smoke_dataset else "campaign", quick=quick
     )
     console.print(f"report: {out / 'REPORT.md'}")
+
+
+@app.command("pool-sweep")
+def pool_sweep(
+    smoke_dataset: bool = typer.Option(
+        False, "--smoke-dataset", help="use the smoke dataset (pipeline test only)"
+    ),
+) -> None:
+    """DEV-022: find the single default_pool_size adjustment (P doubled, D3 criterion)."""
+    from playground.envfile import read_env
+    from playground.poolsweep import run_pool_sweep
+
+    if not HOST_ENV.exists():
+        console.print("[red]config/host.env missing: run `make probe` first[/red]")
+        raise typer.Exit(1)
+    out = run_pool_sweep(
+        _cfg(), _ep(), read_env(HOST_ENV), "smoke" if smoke_dataset else "campaign"
+    )
+    console.print((out / "REPORT.md").read_text(encoding="utf-8"))
 
 
 @app.command()
@@ -400,7 +397,7 @@ def evidence(campaign_id: str) -> None:
     """Validation evidence (Subbab 3.2 tahap validasi): pooling and load-generator checks."""
     import pandas as pd
 
-    from analysis.load import load_runs
+    from playground.runsfile import load_runs
 
     runs = load_runs(results_dir() / campaign_id)
     top = runs["concurrency"].max()

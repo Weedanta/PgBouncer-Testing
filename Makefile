@@ -6,7 +6,8 @@
 #   make memcheck                                # DEV-019: memory limits at the highest c
 #   make calibrate lock                          # RM1 (Subbab 3.3)
 #   make campaign CAMPAIGN=C1                    # RM2: 150 runs, about 2.5 h
-#   make analyze export-thesis CAMPAIGN=C1       # Bab 5 tables and figures
+#
+# Output: results/<C>/runs.csv (one row per run). Statistics are done outside this repo.
 
 SHELL := /bin/bash
 UV ?= uv
@@ -22,8 +23,8 @@ define need_campaign
 endef
 
 .PHONY: help sync validate lint test probe secrets render prep build pin up down ps logs \
-        reload init-data init-data-smoke check-metrics smoke memcheck calibrate adjust lock plan \
-        campaign resume status evidence analyze export-thesis clean-data clean-results
+        reload init-data init-data-smoke check-metrics smoke memcheck calibrate poolsweep adjust lock plan \
+        campaign resume status evidence clean-data clean-results
 
 help:
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -65,7 +66,9 @@ pin: ## record image digests -> config/images.lock.json
 
 up: render ## start the whole stack (core waits until healthy, then monitoring)
 	$(COMPOSE) up -d --wait postgres pgbouncer client
-	$(COMPOSE) up -d
+	$(COMPOSE) up -d --remove-orphans
+	@# Restart Prometheus so it reads the current config/prometheus/prometheus.yml.
+	$(COMPOSE) restart prometheus
 	$(COMPOSE) ps
 
 down: ## stop the stack (data stays on disk)
@@ -101,6 +104,9 @@ memcheck: ## DEV-019: memory limits under the heaviest load (R3, highest c, both
 calibrate: ## RM1: step A + the four checks of "pengamatan awal"
 	$(EXEC) calibrate
 
+poolsweep: ## DEV-022: choose the single default_pool_size adjustment (P doubled, D3)
+	$(EXEC) pool-sweep
+
 adjust: ## one documented adjustment: make adjust PARAM=default_pool_size VALUE=8 REASON="..."
 	@if [ -z "$(PARAM)" ] || [ -z "$(VALUE)" ] || [ -z "$(REASON)" ]; then \
 	  echo 'usage: make adjust PARAM=... VALUE=... REASON="..."' >&2; exit 2; fi
@@ -133,15 +139,6 @@ status: ## progress of a campaign
 evidence: ## pooling and load-generator validation checks of a campaign
 	$(call need_campaign)
 	$(EXEC) evidence $(CAMPAIGN)
-
-# --- M6 analysis (host) ------------------------------------------------------------
-analyze: ## statistics, tables, figures, REPORT.md (Subbab 3.6)
-	$(call need_campaign)
-	$(PG) analyze $(CAMPAIGN)
-
-export-thesis: ## thesis-ready tables/figures with Indonesian captions
-	$(call need_campaign)
-	$(PG) export-thesis $(CAMPAIGN)
 
 # --- destructive (require typing the name) ---------------------------------------
 clean-data: ## delete the PostgreSQL data directory (asks you to type DELETE)

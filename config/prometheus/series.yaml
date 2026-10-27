@@ -40,7 +40,7 @@ series:
   pgb_avg_wait_s:
     expr: 'rate(pgbouncer_stats_client_wait_seconds_total{database="{db}"}[30s]) / rate(pgbouncer_stats_sql_transactions_pooled_total{database="{db}"}[30s])'
     required: false
-  # --- containers and host (cAdvisor, node_exporter) ----------------------------------
+  # --- containers and host (container exporter, DEV-020; node_exporter) ---------------
   cpu_cores_by_container:
     expr: 'sum by (name) (rate(container_cpu_usage_seconds_total{name=~"pgb-(postgres|pgbouncer|client)"}[30s]))'
     required: true

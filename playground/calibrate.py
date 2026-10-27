@@ -341,6 +341,14 @@ def _fmt(x: Any, nd: int = 1) -> str:
     return str(x)
 
 
+def _basis(overrides: dict[str, Any], param: str, default: str) -> str:
+    """Basis column of Tabel 3.2: the rule/default, or the recorded single adjustment."""
+    ov = (overrides or {}).get(param)
+    if not ov:
+        return default
+    return f"Disesuaikan satu kali (aturan awal: {default}). Alasan: {ov['reason']}"
+
+
 def report_md(cfg: dict[str, Any], r: dict[str, Any]) -> str:
     """Indonesian report, written so it can be turned into the RM1 answer (Bab 4.4 v5)."""
     a = r["step_a"]
@@ -362,7 +370,16 @@ def report_md(cfg: dict[str, Any], r: dict[str, Any]) -> str:
         f"- Jumlah inti fisik pada cpuset PostgreSQL: {a['postgres_physical_cores']}; "
         f"spindle efektif: {a['effective_spindles']}.",
         f"- Nilai hasil aturan: **{a['rule_pool_size']}**. Nilai yang diuji: **{p}**.",
-        f"- Penyesuaian yang tercatat: {a['overrides'] or 'tidak ada'}.",
+        "- Penyesuaian yang tercatat: "
+        + (
+            "; ".join(
+                f"{k} = {v['value']} ({v['reason']})"
+                for k, v in (a["overrides"] or {}).items()
+                if not k.startswith("_")
+            )
+            or "tidak ada"
+        )
+        + ".",
         f"- Pemeriksaan kompatibilitas skrip terhadap Tabel 2.2: **{ok(a['lint_passed'])}** "
         "(rincian di `compatibility_lint.md`).",
         "",
@@ -426,13 +443,21 @@ def report_md(cfg: dict[str, Any], r: dict[str, Any]) -> str:
         "| Parameter | Nilai | Dasar penetapan |",
         "|---|---|---|",
         f"| pool_mode | {pgb['pool_mode']} | Subbab 2.5; seluruh profil lolos pemeriksaan Tabel 2.2 |",
-        f"| default_pool_size | {p} | (2 × {a['postgres_physical_cores']} inti fisik) + "
-        f"{a['effective_spindles']} spindle efektif; diperiksa pada pemeriksaan 4 |",
+        f"| default_pool_size | {p} | "
+        + _basis(
+            a["overrides"],
+            "default_pool_size",
+            f"(2 × {a['postgres_physical_cores']} inti fisik) + "
+            f"{a['effective_spindles']} spindle efektif; diperiksa pada pemeriksaan 4",
+        )
+        + " |",
         f"| max_db_connections | {p} | Sama dengan default_pool_size |",
         f"| reserve_pool_size | {pgb['reserve_pool_size']} | Tidak ada koneksi tambahan selama pengujian |",
         f"| max_client_conn | {r['pgbouncer_config_end'].get('max_client_conn')} | "
         "Lebih besar dari konkurensi tertinggi |",
-        f"| query_wait_timeout | {r['pgbouncer_config_end'].get('query_wait_timeout')} | Nilai bawaan |",
+        f"| query_wait_timeout | {r['pgbouncer_config_end'].get('query_wait_timeout')} | "
+        + _basis(a["overrides"], "query_wait_timeout", "Nilai bawaan")
+        + " |",
         f"| max_prepared_statements | {r['pgbouncer_config_end'].get('max_prepared_statements')} | "
         "Nilai bawaan sejak 1.24.0 |",
         "",

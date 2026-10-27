@@ -26,7 +26,6 @@ R5_WEIGHTS = {
 }
 RESET_POLICIES = ("every_run", "write_profiles_only")
 LAYOUTS = ("dedicated", "small_server")
-PRIMARY_TESTS = ("factorial_anova_log",)
 MIN_CONCURRENCY_LEVELS = 5  # supervisor, 20 Oct 2026: "paling tidak lima"
 
 
@@ -155,16 +154,6 @@ def validate(cfg: dict[str, Any]) -> list[str]:
     need(-1 <= cfg["r5_seed"]["random_seed"] <= 1, "r5_seed.random_seed must be in [-1, 1]")
 
     need(cfg["reset"]["policy"] in RESET_POLICIES, f"reset.policy must be one of {RESET_POLICIES}")
-    an = cfg["analysis"]
-    need(
-        an["primary_test"] in PRIMARY_TESTS, f"analysis.primary_test must be one of {PRIMARY_TESTS}"
-    )
-    budgets = an.get("memory", {}).get("budgets_mb", [])
-    need(
-        bool(budgets) and all(isinstance(b, int) and b > 0 for b in budgets),
-        "analysis.memory.budgets_mb must be positive integers (MB)",
-    )
-    need(0 < cfg["analysis"]["alpha"] < 1, "analysis.alpha must be in (0, 1)")
 
     cal = cfg["calibration"]
     need(1 in cal["pool_size_factors"], "calibration.pool_size_factors must include 1 (P itself)")

@@ -30,7 +30,7 @@ def test_design_matches_proposal(cfg):
     assert d["high_concurrency"] == [500, 1000]
     assert d["rounds"] == 3
     assert (d["warmup_s"], d["measure_s"]) == (10, 30)
-    assert cfg["analysis"]["primary_test"] == "factorial_anova_log"
+    assert "analysis" not in cfg  # statistics are done outside this repo
     assert cfg["calibration"]["concurrency"] == [100, 1000]
     assert cfg["calibration"]["duration_s"] == 30
     assert d["randomize_path_order"] is True
@@ -105,7 +105,6 @@ def test_wrong_r5_weight_is_rejected(cfg):
         ("pgbouncer", "query_wait_timeout", 30, "query_wait_timeout"),
         ("postgres", "max_connections", 1000, "max_connections"),
         ("reset", "policy", "never", "reset.policy"),
-        ("analysis", "primary_test", "wilcoxon_exact", "primary_test"),
         ("pgbench", "protocol", "simple", "-M prepared"),
         ("pgbench", "threads", "lots", "pgbench.threads"),
         ("resources", "layout", "laptop", "resources.layout"),

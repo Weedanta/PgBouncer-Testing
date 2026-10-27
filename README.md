@@ -9,9 +9,10 @@ Informasi, FILKOM Universitas Brawijaya). Design source: proposal "Skripsi-Revis
   (rule of Tabel 3.2, four checks of the "pengamatan awal", one documented adjustment,
   lock).
 - **RM2**: what does PgBouncer do to TPS, latency and memory at c = 1, 10, 100, 500, 1000?
-  → `make campaign analyze` (2 paths × 5 profiles × 5 levels × 3 rounds = 150 runs,
-  about 2.5 h; two-factor ANOVA with replications on ln values, contrasts + Holm, memory
-  per connection and capacity at an equal memory budget).
+  → `make campaign` (2 paths × 5 profiles × 5 levels × 3 rounds = 150 runs, about 2.5 h).
+  Output: `results/<C>/runs.csv`, one row per run. **The playground produces data only;**
+  the statistics of Subbab 3.7 are done in an external tool (column dictionary:
+  [docs/DATA-HASIL.md](docs/DATA-HASIL.md)).
 
 **Start here (Indonesian): [docs/PANDUAN.md](docs/PANDUAN.md).**
 Command reference: [docs/RUNBOOK.md](docs/RUNBOOK.md).
@@ -24,7 +25,7 @@ No Ubuntu in WSL yet? Start with [docs/PANDUAN-PELAKSANAAN.md](docs/PANDUAN-PELA
 ```bash
 S=/mnt/c/Users/<you>/OneDrive/Documents/Skripsi/Playground/scripts/wsl_run.sh
 bash $S setup && bash $S smoke && bash $S data && bash $S memcheck && bash $S calibrate
-bash $S lock && bash $S campaign && bash $S analyze
+bash $S lock && bash $S campaign
 ```
 
 The same steps with `make`, inside the WSL copy (`~/pgbouncer-playground`):
@@ -35,8 +36,7 @@ make probe secrets build up         # host split, passwords, images, stack
 make init-data-smoke smoke          # full pipeline on a tiny dataset (labeled SMOKE)
 make init-data memcheck             # real dataset (scale 100, ~1.5 GB), memory check at c = 1000
 make calibrate lock                 # RM1, lock
-make campaign CAMPAIGN=C1           # 150 runs (~2.5 h incl. resets), resumable
-make analyze export-thesis CAMPAIGN=C1
+make campaign CAMPAIGN=C1           # 150 runs (~2.5 h incl. resets), resumable -> results/C1/runs.csv
 ```
 
 ## Status
@@ -49,7 +49,7 @@ make analyze export-thesis CAMPAIGN=C1
 | M3 | Workloads R1-R5, session-feature linter | built, tested on a native stack |
 | M4 | Monitoring (Prometheus, Grafana, exporters) | built; verify with `make check-metrics` |
 | M5 | Runner (plan, run, flags, resume) | built, tested on a native stack |
-| M6 | Analysis pipeline | built, tested (unit + smoke data) |
+| M6 | Analysis pipeline | removed 2026-10-27: statistics are done outside the repo |
 | M7 | Smoke campaign and validation | run `make smoke` on the host |
 | M8 | Calibration and lock | run on the campaign host |
 

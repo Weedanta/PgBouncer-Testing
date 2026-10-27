@@ -224,6 +224,16 @@ def _report(
     ]
     if ok:
         lines.append("Semua kontainer aman. Lanjutkan ke `calibrate`.")
+    elif any(r.get("verdict") == "TIDAK ADA DATA" for r in rows):
+        lines += [f"- {p}" for p in problems]
+        lines += [
+            "",
+            "Data memori kontainer tidak terbaca, jadi ini masalah monitoring, bukan memori "
+            "yang kurang. Jangan menaikkan memori WSL. Periksa exporter kontainer (DEV-020, "
+            "`docker logs pgb-container-exporter`): "
+            "`make check-metrics` harus menampilkan `mem_rss_bytes_by_container` = yes, lalu "
+            "ulangi `make memcheck`.",
+        ]
     else:
         lines += [f"- {p}" for p in problems]
         lines += [

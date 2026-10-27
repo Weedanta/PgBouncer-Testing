@@ -12,5 +12,6 @@ scrape_configs:
     static_configs: [{targets: ["pgbouncer-exporter:9127"]}]
   - job_name: node
     static_configs: [{targets: ["node-exporter:9100"]}]
-  - job_name: cadvisor
-    static_configs: [{targets: ["cadvisor:8080"]}]
+  # DEV-020: per-container CPU and memory (cAdvisor metric names), see docker-compose.yml
+  - job_name: containers
+    static_configs: [{targets: ["container-exporter:9338"]}]

@@ -8,10 +8,12 @@
 #   bash $S data         # real dataset: scale 100 + R5 seed + template
 #   bash $S memcheck     # DEV-019: memory limits at the highest c, both paths (~5 min)
 #   bash $S calibrate    # RM1: four checks (~40 min), report copied to _run_logs/
+#   bash $S poolsweep    # DEV-022: only if check 4 failed; picks the one pool adjustment
 #   bash $S lock         # freeze the configuration (only after a passing calibration)
 #   bash $S campaign     # RM2: 150 runs (~2.5 h), asks for confirmation; CAMPAIGN=C1 by default
 #   bash $S resume       # continue an interrupted campaign
-#   bash $S analyze      # tables, figures, REPORT.md; copied to _run_logs/<campaign>/
+#   (campaign/resume copy the measurement data to _run_logs/<campaign>/; statistics are
+#    done outside this repo, starting from runs.csv)
 #   bash $S down         # stop the stack (data stays)
 #   (bash $S all = setup + smoke)
 #
@@ -24,7 +26,7 @@
 set -uo pipefail
 STAGE="${1:-all}"
 case "$STAGE" in
-  setup|smoke|all|down|data|memcheck|calibrate|lock|campaign|resume|analyze) ;;
+  setup|smoke|all|down|data|memcheck|calibrate|poolsweep|lock|campaign|resume) ;;
   *) echo "stage tidak dikenal: $STAGE (lihat komentar di awal skrip)" >&2; exit 2;;
 esac
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -88,6 +90,12 @@ if [ -f "$DST/config/locked/LOCK.json" ]; then
 fi
 status "menyalin repo dari OneDrive ke $DST"
 mkdir -p "$DST"
+# tar does not delete files that were removed from the repo (for example analysis/,
+# removed 27 Oct 2026), so clear the code folders of the WSL copy first. results/,
+# secrets/, config/ and .git are kept.
+for d in playground analysis tests tools workloads scripts docs docker; do
+  rm -rf "${DST:?}/$d"
+done
 tar -C "$SRC" \
   --exclude=./.venv --exclude=./results --exclude=./secrets --exclude=./config/host.env \
   --exclude=./config/active --exclude=./config/locked --exclude=./config/calibration_overrides.yaml \
@@ -104,6 +112,16 @@ cd "$DST" || fail "tidak bisa masuk ke $DST"
 
 run() { status "> $*"; "$@" || fail "$*"; }
 
+# Copy a campaign's measurement data to _run_logs/<id>/ so it can be opened from Windows:
+# runs.csv (one row per run), plan.csv, attempts.csv, campaign.json and every run directory
+# without the raw per-transaction pgbench logs (large; they stay on the WSL disk).
+copy_data() {
+  local cid="$1"
+  mkdir -p "$LOGDIR/$cid"
+  tar -C "results/$cid" --exclude='pgbench_log*' -cf - . | tar -C "$LOGDIR/$cid" -xf - \
+    || status "PERINGATAN: gagal menyalin data $cid ke _run_logs"
+}
+
 if [ "$STAGE" = "down" ]; then
   run make down
   exit 0
@@ -118,6 +136,19 @@ if [ "$STAGE" = "setup" ] || [ "$STAGE" = "all" ]; then
   run make build
   run make up
   make ps | tee "$LOGDIR/compose-ps.txt"
+  # DEV-020: the container exporter must report the containers by name (RSS and CPU per
+  # container, RM2), and Prometheus must be scraping it.
+  status "memeriksa exporter memori dan CPU per kontainer"
+  ok=""
+  for _ in $(seq 1 12); do
+    # Ask Prometheus itself (not the exporter): the series must be scraped and stored.
+    if docker exec pgb-prometheus wget -qO- \
+        'http://localhost:9090/api/v1/query?query=container_memory_rss%7Bname%3D%22pgb-postgres%22%7D' \
+        2>/dev/null | grep -q '"name":"pgb-postgres"'; then ok=1; break; fi
+    sleep 5
+  done
+  [ -n "$ok" ] || fail "Prometheus belum menyimpan memori pgb-postgres. Kirim hasil: docker logs pgb-container-exporter --tail 20; docker exec pgb-prometheus wget -qO- http://localhost:9090/api/v1/targets | grep -o '\"health\":\"[a-z]*\"'"
+  status "exporter kontainer OK: Prometheus menyimpan memori dan CPU per kontainer"
   run make pin
   cp config/images.lock.json "$LOGDIR/images.lock.json"
   status "stack berjalan: Grafana http://127.0.0.1:3000 (admin / $(cat secrets/grafana_admin_password)), Prometheus http://127.0.0.1:9090"
@@ -136,10 +167,8 @@ if [ "$STAGE" = "smoke" ] || [ "$STAGE" = "all" ]; then
   wait "$smoke_pid" || fail "smoke gagal (lihat smoke-$STAMP.log)"
   cid="$(ls -1d results/SMOKE-* | tail -n1 | xargs basename)"
   make evidence CAMPAIGN="$cid" > "$LOGDIR/evidence-$cid.txt" 2>&1
-  mkdir -p "$LOGDIR/$cid"
-  cp -r "results/$cid/analysis" "$LOGDIR/$cid/" 2>/dev/null
-  cp "results/$cid/runs.csv" "results/$cid/attempts.csv" "$LOGDIR/$cid/" 2>/dev/null
-  status "smoke selesai: $cid (analisis disalin ke _run_logs/$cid)"
+  copy_data "$cid"
+  status "smoke selesai: $cid (data disalin ke _run_logs/$cid)"
 fi
 
 if [ "$STAGE" = "data" ]; then
@@ -171,7 +200,19 @@ if [ "$STAGE" = "calibrate" ]; then
   fi
 fi
 
+if [ "$STAGE" = "poolsweep" ]; then
+  run make poolsweep
+  rep="$(ls -1d results/poolsweep/*/ 2>/dev/null | grep -v SMOKE | tail -n1)"
+  if [ -n "$rep" ]; then
+    mkdir -p "$LOGDIR/poolsweep"
+    cp -r "$rep" "$LOGDIR/poolsweep/"
+    status "laporan poolsweep disalin ke _run_logs/poolsweep/$(basename "$rep")"
+  fi
+fi
+
 if [ "$STAGE" = "lock" ]; then
+  # `make lock` commits config/locked and tags it; git needs an identity for that.
+  git config user.email >/dev/null || fail "identitas git belum diatur. Jalankan: git config --global user.name \"Nama\"; git config --global user.email \"email@contoh.com\", lalu ulangi lock."
   run make lock
   cp -r config/locked "$LOGDIR/locked"
   status "konfigurasi terkunci; salinannya ada di _run_logs/locked"
@@ -181,15 +222,9 @@ if [ "$STAGE" = "campaign" ] || [ "$STAGE" = "resume" ]; then
   [ -f config/locked/LOCK.json ] || fail "konfigurasi belum dikunci: jalankan 'calibrate' lalu 'lock'"
   run make "$STAGE" CAMPAIGN="$CAMPAIGN"
   make status CAMPAIGN="$CAMPAIGN" > "$LOGDIR/status-$CAMPAIGN.txt" 2>&1
-fi
-
-if [ "$STAGE" = "analyze" ]; then
-  run make analyze CAMPAIGN="$CAMPAIGN"
-  run make export-thesis CAMPAIGN="$CAMPAIGN"
-  mkdir -p "$LOGDIR/$CAMPAIGN"
-  cp -r "results/$CAMPAIGN/analysis" "results/$CAMPAIGN/thesis" "$LOGDIR/$CAMPAIGN/" 2>/dev/null
-  cp "results/$CAMPAIGN/runs.csv" "results/$CAMPAIGN/attempts.csv" "$LOGDIR/$CAMPAIGN/" 2>/dev/null
-  status "analisis disalin ke _run_logs/$CAMPAIGN"
+  make evidence CAMPAIGN="$CAMPAIGN" > "$LOGDIR/evidence-$CAMPAIGN.txt" 2>&1
+  copy_data "$CAMPAIGN"
+  status "data kampanye disalin ke _run_logs/$CAMPAIGN (runs.csv = satu baris per run)"
 fi
 
 status "selesai"

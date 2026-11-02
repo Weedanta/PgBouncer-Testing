@@ -40,6 +40,10 @@ def snapshot(ep: Endpoints, dbname: str, include_config: bool = False) -> dict[s
         snap["postmaster_start"] = str(
             db.rows(conn, "SELECT pg_postmaster_start_time() AS t")[0]["t"]
         )
+        # DEV-026: a crash restart (e.g. an OOM kill) keeps the postmaster and its start
+        # time but starts a new checkpointer, so its PID tells the two apart.
+        pid = _try(conn, "SELECT pid FROM pg_stat_activity WHERE backend_type = 'checkpointer'")
+        snap["checkpointer_pid"] = pid[0]["pid"] if pid else None
         snap["pg_stat_database"] = db.rows(
             conn, "SELECT * FROM pg_stat_database WHERE datname = %s", (dbname,)
         )
@@ -65,6 +69,30 @@ def snapshot(ep: Endpoints, dbname: str, include_config: bool = False) -> dict[s
             snap["pgb_config"] = db.admin_rows(admin, "SHOW CONFIG")
             snap["pgb_version"] = db.admin_rows(admin, "SHOW VERSION")
     return snap
+
+
+def wait_until_ready(ep: Endpoints, timeout_s: float) -> float:
+    """Wait until PostgreSQL accepts connections again; return the seconds waited.
+
+    After a crash restart PostgreSQL refuses connections while it runs crash recovery
+    (DEV-026). Raises the last psycopg error when it is still refusing after timeout_s.
+    """
+    t0 = time.monotonic()
+    while True:
+        try:
+            with db.superuser(ep) as conn:
+                db.rows(conn, "SELECT 1 AS ok")
+            return time.monotonic() - t0
+        except psycopg.Error:
+            if time.monotonic() - t0 > timeout_s:
+                raise
+            time.sleep(2)
+
+
+def crash_restart(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    """True when PostgreSQL restarted all its processes between two snapshots (DEV-026)."""
+    b, a = before.get("checkpointer_pid"), after.get("checkpointer_pid")
+    return b is not None and a is not None and b != a
 
 
 def _try(conn: psycopg.Connection, sql: str) -> list[dict[str, Any]] | None:
@@ -118,6 +146,11 @@ def deltas(before: dict[str, Any], after: dict[str, Any], dbname: str) -> dict[s
         out["wal_bytes"] = _num(after["pg_stat_wal"][0].get("wal_bytes")) - _num(
             before["pg_stat_wal"][0].get("wal_bytes")
         )
+    out["postgres_crash_restart"] = crash_restart(before, after)
+    if out["postgres_crash_restart"]:
+        # Crash recovery resets PostgreSQL's cumulative statistics: these deltas are void.
+        for key in [k for k in out if k.startswith("pg_") or k in ("checkpoints", "wal_bytes")]:
+            out[key] = None
     sb, sa = _pgb_stats_row(before, dbname), _pgb_stats_row(after, dbname)
     if sb and sa:
         dx = _num(sa["total_xact_count"]) - _num(sb["total_xact_count"])

@@ -46,7 +46,7 @@ from playground.pgbench import (
 )
 from playground.plan import PlanRow, plan_from_config, read_plan, write_plan
 from playground.settings import Endpoints, cpuset_size, pgbench_threads, prometheus_required
-from playground.snapshots import Sampler, deltas, snapshot
+from playground.snapshots import Sampler, crash_restart, deltas, snapshot, wait_until_ready
 
 RUN_FIELDS = [
     "seq",
@@ -207,6 +207,19 @@ def _pgbench(
     return proc.returncode
 
 
+PG_RECOVERY_TIMEOUT_S = 300
+
+
+def _wait_ready(ep: Endpoints) -> float:
+    """Seconds PostgreSQL needed to accept connections again (0 unless it crash-restarted)."""
+    try:
+        return wait_until_ready(ep, PG_RECOVERY_TIMEOUT_S)
+    except Exception as exc:  # noqa: BLE001 - PostgreSQL never came back: the instrument stops
+        raise InfraError(
+            f"PostgreSQL did not accept connections within {PG_RECOVERY_TIMEOUT_S} s: {exc}"
+        ) from exc
+
+
 def execute(cfg: dict[str, Any], ep: Endpoints, req: RunRequest) -> dict[str, Any]:
     """Run warmup + measurement once and return the summary (does not touch runs.csv)."""
     rd = req.run_dir
@@ -273,6 +286,8 @@ def execute(cfg: dict[str, Any], ep: Endpoints, req: RunRequest) -> dict[str, An
         raise InfraError(f"warmup pgbench setup error: {(rd / 'warmup.stderr').read_text()[-500:]}")
 
     # Deltas must cover the measurement window only, so take a snapshot after warmup.
+    # DEV-026: PostgreSQL may be in crash recovery here (e.g. an OOM kill during warmup).
+    meta["pg_wait_before_measure_s"] = _wait_ready(ep)
     measure_start = snapshot(ep, dbname)
     (rd / "snapshot_measure_start.json").write_text(
         json.dumps(measure_start, indent=2, default=str)
@@ -295,10 +310,16 @@ def execute(cfg: dict[str, Any], ep: Endpoints, req: RunRequest) -> dict[str, An
     if rc == 1:
         raise InfraError(f"pgbench setup error: {(rd / 'measure.stderr').read_text()[-500:]}")
 
+    meta["pg_wait_after_measure_s"] = _wait_ready(ep)  # DEV-026
     after = snapshot(ep, dbname)
     (rd / "snapshot_after.json").write_text(json.dumps(after, indent=2, default=str))
     dl = deltas(measure_start, after, dbname)
-    dl["postmaster_restarted"] = before.get("postmaster_start") != after.get("postmaster_start")
+    # DEV-026: a crash restart keeps pg_postmaster_start_time(); it is a restart all the same.
+    meta["postgres_crash_restart"] = crash_restart(before, after)
+    dl["postmaster_restarted"] = (
+        before.get("postmaster_start") != after.get("postmaster_start")
+        or meta["postgres_crash_restart"]
+    )
     meta["deltas"] = dl
 
     if req.profile == "R5":
@@ -675,8 +696,16 @@ class Campaign:
                 )
                 raise
             if result.get("flag_container_restarted"):
-                self.incident(f"PostgreSQL restarted during {row.run_id}")
-            outcome = "ok" if not result["aborted_clients"] else "sut_aborted_clients"
+                # DEV-026: a system-under-test outcome, recorded and never retried.
+                self.incident(
+                    f"PostgreSQL restarted during {row.run_id}: every backend was terminated "
+                    "(usually the postgres container ran out of memory; check `docker inspect "
+                    "pgb-postgres` for OOMKilled). The run is recorded with "
+                    "flag_container_restarted=True and is not retried; continuing"
+                )
+                outcome = "sut_postgres_restarted"
+            else:
+                outcome = "ok" if not result["aborted_clients"] else "sut_aborted_clients"
             append_row(
                 self.attempts_path,
                 ATTEMPT_FIELDS,
